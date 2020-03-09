@@ -260,6 +260,7 @@ var _ = Describe("Controllerutil", func() {
 	Describe("CreateOrUpdate", func() {
 		var deploy *appsv1.Deployment
 		var deplSpec appsv1.DeploymentSpec
+		var containerPort corev1.ContainerPort
 		var deplKey types.NamespacedName
 		var specr controllerutil.MutateFn
 
@@ -269,6 +270,12 @@ var _ = Describe("Controllerutil", func() {
 					Name:      fmt.Sprintf("deploy-%d", rand.Int31()),
 					Namespace: "default",
 				},
+			}
+
+			containerPort = corev1.ContainerPort{
+				Name:          "http",
+				ContainerPort: 3333,
+				//Protocol: corev1.ProtocolTCP, // intentionally left empty to have api server default it
 			}
 
 			deplSpec = appsv1.DeploymentSpec{
@@ -286,6 +293,7 @@ var _ = Describe("Controllerutil", func() {
 							{
 								Name:  "busybox",
 								Image: "busybox",
+								Ports: []corev1.ContainerPort{containerPort},
 							},
 						},
 					},
@@ -324,6 +332,7 @@ var _ = Describe("Controllerutil", func() {
 			op, err := controllerutil.CreateOrUpdate(context.TODO(), c, deploy, specr)
 			Expect(err).NotTo(HaveOccurred())
 			Expect(op).To(BeEquivalentTo(controllerutil.OperationResultCreated))
+			var rv = deploy.ObjectMeta.ResourceVersion
 
 			op, err = controllerutil.CreateOrUpdate(context.TODO(), c, deploy, deploymentScaler(deploy, scale))
 			By("returning no error")
@@ -336,10 +345,32 @@ var _ = Describe("Controllerutil", func() {
 			fetched := &appsv1.Deployment{}
 			Expect(c.Get(context.TODO(), deplKey, fetched)).To(Succeed())
 			Expect(*fetched.Spec.Replicas).To(Equal(scale))
+			Expect(fetched.ObjectMeta.ResourceVersion).ToNot(Equal(rv))
+		})
+
+		It("updates existing object with missing defaults", func() {
+			op, err := controllerutil.CreateOrUpdate(context.TODO(), c, deploy, specr)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(op).To(BeEquivalentTo(controllerutil.OperationResultCreated))
+			var rv = deploy.ObjectMeta.ResourceVersion
+
+			// set the ports again but drop the defaulted value
+			op, err = controllerutil.CreateOrUpdate(context.TODO(), c, deploy, deploymentPortChanger(deploy, []corev1.ContainerPort{containerPort}))
+			By("returning no error")
+			Expect(err).NotTo(HaveOccurred())
+
+			By("returning OperationResultNone")
+			Expect(op).To(BeEquivalentTo(controllerutil.OperationResultNone))
+
+			By("checking the deployment resource version")
+			fetched := &appsv1.Deployment{}
+			Expect(c.Get(context.TODO(), deplKey, fetched)).To(Succeed())
+			Expect(fetched.ObjectMeta.ResourceVersion).Should(Equal(rv))
 		})
 
 		It("updates only changed objects", func() {
 			op, err := controllerutil.CreateOrUpdate(context.TODO(), c, deploy, specr)
+			var rv = deploy.ObjectMeta.ResourceVersion
 
 			Expect(op).To(BeEquivalentTo(controllerutil.OperationResultCreated))
 			Expect(err).NotTo(HaveOccurred())
@@ -350,6 +381,7 @@ var _ = Describe("Controllerutil", func() {
 
 			By("returning OperationResultNone")
 			Expect(op).To(BeEquivalentTo(controllerutil.OperationResultNone))
+			Expect(deploy.ObjectMeta.ResourceVersion).To(Equal(rv))
 		})
 
 		It("errors when MutateFn changes object name on creation", func() {
@@ -495,6 +527,17 @@ func deploymentNamespaceChanger(deploy *appsv1.Deployment) controllerutil.Mutate
 func deploymentScaler(deploy *appsv1.Deployment, replicas int32) controllerutil.MutateFn {
 	fn := func() error {
 		deploy.Spec.Replicas = &replicas
+		return nil
+	}
+	return fn
+}
+
+func deploymentPortChanger(deploy *appsv1.Deployment, ports []corev1.ContainerPort) controllerutil.MutateFn {
+	fn := func() error {
+		if len(deploy.Spec.Template.Spec.Containers) == 0 {
+			return fmt.Errorf("cannot set ports on empty container list")
+		}
+		deploy.Spec.Template.Spec.Containers[0].Ports = ports
 		return nil
 	}
 	return fn

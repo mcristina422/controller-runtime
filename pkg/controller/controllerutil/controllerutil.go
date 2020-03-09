@@ -220,6 +220,21 @@ func CreateOrUpdate(ctx context.Context, c client.Client, obj runtime.Object, f 
 	if err := c.Update(ctx, obj); err != nil {
 		return OperationResultNone, err
 	}
+
+	existingMeta, err := meta.Accessor(existing)
+	if err != nil {
+		return OperationResultNone, err
+	}
+
+	objMeta, err := meta.Accessor(obj)
+	if err != nil {
+		return OperationResultNone, err
+	}
+
+	if existingMeta.GetResourceVersion() == objMeta.GetResourceVersion() {
+		return OperationResultNone, nil
+	}
+
 	return OperationResultUpdated, nil
 }
 
